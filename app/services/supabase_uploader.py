@@ -168,9 +168,6 @@ def upload_inventory_data(items_data: list):
         else:
             print(f"✅ Stock inserted for {name}")
 
-        progress = (idx + 1) / total
-        progress_bar.progress(progress, text=f"{idx+1} of {total} processed items")
-
     st.success("✅ Inventory loaded successfully.")
 
 def get_item_id_by_name(name):
@@ -313,3 +310,4 @@ def fetch_inventory_comparison():
         print("Status:", response.status_code)
         print("Response:", response.text)
         return []
+
