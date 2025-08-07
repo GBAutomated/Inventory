@@ -166,8 +166,7 @@ def upload_inventory_data(items_data: list):
             print(f"🔴 Supabase response: {response.status_code} - {response.text}")
         else:
             print(f"✅ Stock inserted for {name}")
-
-    st.success("✅ Inventory loaded successfully.")
+            
 
 def get_item_id_by_name(name):
     item = get_item_by_name(name)
@@ -309,5 +308,6 @@ def fetch_inventory_comparison():
         print("Status:", response.status_code)
         print("Response:", response.text)
         return []
+
 
 
