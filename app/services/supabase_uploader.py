@@ -114,7 +114,6 @@ def insert_stock(stock_data):
 
 def upload_inventory_data(items_data: list):
     total = len(items_data)
-    progress_bar = st.progress(0, text="Iniciando carga...")
 
     for idx, row in enumerate(items_data):
         name = str(row.get("Name", "")).strip()
@@ -310,4 +309,5 @@ def fetch_inventory_comparison():
         print("Status:", response.status_code)
         print("Response:", response.text)
         return []
+
 
