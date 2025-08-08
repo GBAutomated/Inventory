@@ -1,10 +1,12 @@
 import streamlit as st
 import os
 from dotenv import load_dotenv
+from urllib.parse import urljoin
 
 load_dotenv()
 LOGO=os.getenv("LOGO")
 STREAMLIT_URL=os.getenv("STREAMLIT_URL")
+BACKEND_URL = os.getenv("BACKEND_URL").rstrip("/")
 
 def show_sidebar_menu():
 
@@ -45,8 +47,12 @@ def show_sidebar_menu():
             st.session_state.clear()
             st.query_params.clear()
             st.markdown("🔄 Closing session...")
+
+            
+            logout_url = urljoin(BACKEND_URL + "/", "logout")
+
             st.markdown(
-                "<meta http-equiv='refresh' content='0;url=http://localhost:8000/logout'>",
+                f"<meta http-equiv='refresh' content='0;url={logout_url}'>",
                 unsafe_allow_html=True
             )
             st.stop()
