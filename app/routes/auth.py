@@ -6,21 +6,17 @@ from pathlib import Path
 import os
 import requests
 
-# Cargar variables desde .env
 load_dotenv()
 
-# Leer variables obligatorias
 GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
-# Leer URLs del entorno
-BACKEND_URL = os.getenv("BACKEND_URL", "http://localhost:8000")
+BACKEND_URL = os.getenv("BACKEND_URL")
 REDIRECT_URI = os.getenv("REDIRECT_URI", f"{BACKEND_URL}/auth/callback")
 STREAMLIT_URL = os.getenv("STREAMLIT_URL", "http://localhost:8501")
 
-# Validar variables obligatorias
 for var, value in {
     "GOOGLE_CLIENT_ID": GOOGLE_CLIENT_ID,
     "GOOGLE_CLIENT_SECRET": GOOGLE_CLIENT_SECRET,
@@ -30,7 +26,6 @@ for var, value in {
     if not value:
         raise ValueError(f"❌ {var} no se está leyendo del .env")
 
-# Configurar OAuth
 oauth = OAuth()
 oauth.register(
     name="google",
@@ -40,7 +35,6 @@ oauth.register(
     client_kwargs={"scope": "openid email profile"},
 )
 
-# Router principal
 router = APIRouter()
 
 @router.get("/login")
@@ -56,7 +50,6 @@ async def auth_callback(request: Request):
     if not email:
         return RedirectResponse(url=f"{STREAMLIT_URL}/unauthorized")
 
-    # Validar si el usuario está activo en Supabase
     headers = {
         "apikey": SUPABASE_KEY,
         "Authorization": f"Bearer {SUPABASE_KEY}"

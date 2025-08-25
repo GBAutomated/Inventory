@@ -1,11 +1,10 @@
-import os
-import requests
-from dotenv import load_dotenv
-from datetime import datetime
+import os, requests, uuid
 import streamlit as st
 import urllib.parse
-import uuid
-
+from dotenv import load_dotenv
+from datetime import datetime
+from urllib.parse import quote
+    
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -25,6 +24,17 @@ def get_user_name_by_email(email: str) -> str | None:
         data = response.json()
         if data and "name" in data[0]:
             return data[0]["name"]
+    return None
+
+# Get user id
+def get_user_id_by_email(email: str) -> str | None:
+    url = f"{SUPABASE_URL}/rest/v1/Users?email=eq.{email}&select=id"
+    response = requests.get(url, headers=HEADERS)
+
+    if response.ok:
+        data = response.json()
+        if data and "id" in data[0]:
+            return data[0]["id"]
     return None
 
 def get_or_create_category(category_name):
@@ -55,6 +65,27 @@ def get_or_create_category(category_name):
     except Exception as e:
         print(f"❌ Error parsing response when creating category '{name}': {e}")
         return None
+
+def fetch_all_categories():
+    url = f"{SUPABASE_URL}/rest/v1/Item_Categories?select=id,name&order=name.asc"
+    r = requests.get(url, headers=HEADERS)
+    return r.json() if r.ok else []
+
+def get_latest_stock_items(categories: list[str] | None = None):
+    base = f"{SUPABASE_URL}/rest/v1/Latest_Item_Stock?select=name,description,category_name"
+
+    if categories:
+        vals = ",".join([f"%22{c}%22" for c in categories if c and str(c).strip()])
+        url = f"{base}&category_name=in.({vals})"
+    else:
+        url = base
+
+    r = requests.get(url, headers=HEADERS, timeout=30)
+    if r.ok:
+        return r.json()
+    else:
+        print(f"❌ Error fetching latest stock items: {r.status_code} - {r.text}")
+        return []
 
 def get_item_by_name(name):
     encoded_name = urllib.parse.quote(name)
@@ -166,7 +197,8 @@ def upload_inventory_data(items_data: list):
             print(f"🔴 Supabase response: {response.status_code} - {response.text}")
         else:
             print(f"✅ Stock inserted for {name}")
-            
+
+    st.success("✅ Inventory loaded successfully.")
 
 def get_item_id_by_name(name):
     item = get_item_by_name(name)
@@ -226,6 +258,7 @@ def upload_physical_count(parsed_data: list):
             print(f"⚠️ Item '{row['name']}'not found in the database.")
 
 ## For Physical Counts
+
 def insert_physical_count(data: dict):
     url = f"{SUPABASE_URL}/rest/v1/Stock_Counts"
     
@@ -253,18 +286,22 @@ def insert_physical_count(data: dict):
         print(f"Response text: {response.text}")
         return None
    
-def insert_physical_count_items(items: list):
+def insert_physical_count_items(items: list) -> bool:
+    
     url = f"{SUPABASE_URL}/rest/v1/Stock_Count_Items"
-    response = requests.post(url, headers=HEADERS, json=items)
 
-    if response.ok:
-        st.info("✅ Supabase accepted the item batch.")
+    headers = dict(HEADERS)
+    prefer = headers.get("Prefer", "")
+    if "return=" not in prefer:
+        headers["Prefer"] = (prefer + ",return=representation").strip(",")
+    headers["Content-Type"] = "application/json"
+    resp = requests.post(url, headers=headers, json=items)
+
+    if resp.ok:
         return True
-    else:
-        st.error("❌ Error inserting physical count items.")
-        st.text(f"📦 Payload: {items}")
-        st.text(f"🔴 Supabase response: {response.status_code} - {response.text}")
-        return False
+
+    st.error("❌ Error inserting physical count items.")
+    return False
 
 def fetch_latest_stock_items():
     url = f"{SUPABASE_URL}/rest/v1/Latest_Item_Stock?select=name,description,category_name"
@@ -309,5 +346,37 @@ def fetch_inventory_comparison():
         print("Response:", response.text)
         return []
 
+def fetch_orders_exceed_inventory():
+    url = f"{SUPABASE_URL}/rest/v1/Orders_Exceed_Inventory?select=item_id,description,on_hand, on_so,category_id"
+    response = requests.get(url, headers=HEADERS)
+    if response.ok:
+        return response.json()
+    else:
+        print("❌ Error fetching Orders_Exceed_Inventory")
+        print("Status:", response.status_code)
+        print("Response:", response.text)
+        return []
 
 
+#Restock Options
+
+#KPI's
+
+def fetch_restock_kpi_source():
+    url = f"{SUPABASE_URL}/rest/v1/restock_kpi_source"
+
+    response = requests.get(url, headers=HEADERS)
+    return response.json() if response.ok else []
+
+
+def insert_restock_qt(data: list):
+    url = f"{SUPABASE_URL}/rest/v1/Restock"
+    response = requests.post(url, headers=HEADERS, json=data)
+
+    if response.ok:
+        return True
+    else:
+        print("❌ Failed to insert restock quantities:")
+        print("Payload:", data)
+        print(f"Status: {response.status_code} - {response.text}")
+        return False

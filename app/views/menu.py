@@ -23,25 +23,28 @@ def show_sidebar_menu():
             return st.button(label, key=key, use_container_width=True)
 
         # Main Menu
-        if uniform_button("📤 Inventory", key="btn_inventory"):
-            st.session_state.active_menu = "Inventory"
-            st.session_state.active_submenu = None
+        
         if uniform_button("📈 Dashboard", key="btn_dashboard"):
             st.session_state.active_menu = "Dashboard"
             st.session_state.active_submenu = None
-        if uniform_button("⚙️ Settings", key="btn_settings"):
-            st.session_state.active_menu = "Settings"
+        if uniform_button("📤 Inventory", key="btn_inventory"):
+            st.session_state.active_menu = "Inventory"
             st.session_state.active_submenu = None
-
+        #if uniform_button("⚙️ Settings", key="btn_settings"):
+        #    st.session_state.active_menu = "Settings"
+        #    st.session_state.active_submenu = None
+#
         st.markdown("---")
 
         # Submenu
         if st.session_state.active_menu == "Inventory":
             st.markdown("**Inventory Options:**")
-            if uniform_button("📤 System Inventory", key="btn_sys_inv"):
+            if uniform_button("🖥️ System Inventory", key="btn_sys_inv"):
                 st.session_state.active_submenu = "System Inventory"
-            if uniform_button("📤 Physical Count", key="btn_phys_count"):
+            if uniform_button("📝 Physical Count", key="btn_phys_count"):
                 st.session_state.active_submenu = "Physical Count"
+            if uniform_button("🛠️ Restock Manager", key="btn_restock_count"):
+                st.session_state.active_submenu = "Restock Manager"
 
         if uniform_button("🚪 Log out", key="logout_btn"):
             st.session_state.clear()

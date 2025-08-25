@@ -1,42 +1,22 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import requests
 import os
 from dotenv import load_dotenv
+from app.services.dashboard_service import (
+    fetch_categories,  
+)
+from app.services.supabase_uploader import (
+    fetch_orders_exceed_inventory,
+)
 
 load_dotenv()
 RED=os.getenv("RED")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-HEADERS = {
-    "apikey": SUPABASE_KEY,
-    "Authorization": f"Bearer {SUPABASE_KEY}",
-    "Content-Type": "application/json"
-}
-
-def fetch_stockout_items():
-    url = f"{SUPABASE_URL}/rest/v1/Orders_Exceed_Inventory?select=item_id,description,on_hand, on_so,category_id"
-    response = requests.get(url, headers=HEADERS)
-    if response.ok:
-        return response.json()
-    else:
-        st.error("❌ Out-of-stock data could not be obtained.")
-        st.text(f"🔴 Supabase response: {response.status_code} - {response.text}")
-        return []
-
-def fetch_categories():
-    url = f"{SUPABASE_URL}/rest/v1/Item_Categories?select=id,name"
-    response = requests.get(url, headers=HEADERS)
-    if response.ok:
-        return response.json()
-    else:
-        return []
 
 def show_demand_exceeds_stock_section():
     st.subheader("Understocked SO Items")
 
-    data = fetch_stockout_items()
+    data = fetch_orders_exceed_inventory()
     if not data:
         return
 
@@ -85,7 +65,6 @@ def show_demand_exceeds_stock_section():
         layer="below"
     )
 
-    # Lines only on the edge
     fig.update_xaxes(showgrid=False, zeroline=True, zerolinecolor="white")
     fig.update_yaxes(showgrid=False)
 
