@@ -1,52 +1,67 @@
-import streamlit as st
 import os
+import streamlit as st
 from dotenv import load_dotenv
+
+st.set_page_config(page_title="Inventory Dashboard", layout="wide")
+
+load_dotenv()
+LOGO = os.getenv("LOGO") or ""
+GOOGLE = os.getenv("GOOGLE") or ""
+BACKEND_URL = os.getenv("BACKEND_URL") or ""
+
 from app.views.inventory_dashboard import show_dashboard
 from app.views.dashboard import show_dashboard as show_general_dashboard
 from app.views.upload_system import show_upload_system
 from app.views.upload_physical import (
     show_upload_physical,
-    generate_physical_inventory_template,   
+    generate_physical_inventory_template,
 )
 from app.services.supabase_uploader import (
     get_user_name_by_email,
     get_user_id_by_email,
     fetch_all_categories,
-    get_latest_stock_items as fetch_items_by_cat 
+    get_latest_stock_items as fetch_items_by_cat,
 )
-from app.views.restock_manager import(
+from app.views.restock_manager import (
     generate_restock_file_by_categories_template,
     show_upload_restock_file,
     show_kpis,
-    show_restock_table_and_file_download
+    show_restock_table_and_file_download,
 )
 from app.views.menu import show_sidebar_menu
-
-load_dotenv()
-LOGO = os.getenv("LOGO")
-GOOGLE = os.getenv("GOOGLE")
-BACKEND_URL = os.getenv("BACKEND_URL")
+from app.views.hubspot_lead_update import (  
+    show_update_lead_form,
+)
+from app.views.hubspot_leads_file import (
+    show_hubspot_file_creator
+)
+from app.views.google_earth_file import (
+    show_google_form
+)
 
 if "user_id" not in st.session_state:
     st.session_state["user_id"] = None
 
+
 def require_login():
     query_params = st.query_params
 
+    # Handle logout via query param
     if "logout" in query_params:
         st.session_state.clear()
-        st.query_params.clear()
+        try:
+            st.query_params.update({})
+        except Exception:
+            pass
         st.rerun()
 
     if "user" not in st.session_state:
         if "user" in query_params:
-
             email = query_params["user"]
             if isinstance(email, list):
                 email = email[0]
 
             st.session_state["user"] = email
-
             user_name = get_user_name_by_email(email)
             st.session_state["name"] = user_name or email
 
@@ -54,26 +69,35 @@ def require_login():
             print("User Id en login:", st.session_state["user_id"])
 
             st.success(f"Welcome 👋 {st.session_state['name']}")
-            st.query_params.clear()
+            try:
+                st.query_params.update({})
+            except Exception:
+                pass
         else:
-            st.image(LOGO)
-            st.title("🔐 Welcome to SFR GB System ")
+            # Login screen
+            if LOGO:
+                try:
+                    st.image(LOGO)
+                except Exception:
+                    pass
+            st.title("🔐 Welcome to SFR GB System")
             if st.button("Sign in with your Google Account", key="login_btn"):
-                login_url = f"{BACKEND_URL}/login"
+                login_url = f"{BACKEND_URL}/login" if BACKEND_URL else "/login"
                 st.markdown(
                     f"<meta http-equiv='refresh' content='0;url={login_url}'>",
-                    unsafe_allow_html=True
+                    unsafe_allow_html=True,
                 )
                 st.stop()
             st.stop()
 
-# Start of the app
-require_login()
-st.set_page_config(page_title="Inventory Dashboard", layout="wide")
 
-# Menu
+# Start 
+require_login()
+
+# Sidebar
 active_menu, active_submenu = show_sidebar_menu()
 
+# Routing
 if active_menu == "Inventory" and active_submenu == "System Inventory":
     show_upload_system()
 
@@ -96,14 +120,14 @@ elif active_menu == "Inventory" and active_submenu == "Physical Count":
             selected = st.multiselect(
                 "Categories",
                 options=cat_names,
-                key="pc_categories",  # persistimos selección
+                key="pc_categories",
                 placeholder="Choose one or more categories…",
             )
 
             st.caption(f"{len(selected)} selected")
 
-            if st.button("Generate File", disabled=len(selected) == 0, type="primary", key="gen_file_btn"):
-                items = fetch_items_by_cat(categories=selected)  # del servicio
+            if st.button("Generate File", disabled=len(selected) == 0, type="primary", key="gen_file_btn_pc"):
+                items = fetch_items_by_cat(categories=selected)
                 if not items:
                     st.warning("No items found for the selected categories.")
                 else:
@@ -120,13 +144,11 @@ elif active_menu == "Inventory" and active_submenu == "Physical Count":
                     data=st.session_state["pc_excel_bytes"],
                     file_name="PhysicalInventorySheet.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="dl_sheet_btn",
+                    key="dl_sheet_btn_pc",
                 )
 
 elif active_menu == "Inventory" and active_submenu == "Restock Manager":
-
     show_kpis()
-
     show_restock_table_and_file_download()
 
     col1, col2 = st.columns([0.5, 0.5])
@@ -152,20 +174,18 @@ elif active_menu == "Inventory" and active_submenu == "Restock Manager":
             selected = st.multiselect(
                 "Categories",
                 options=cat_names,
-                key="pc_categories", 
+                key="pc_categories_restock",
                 placeholder="Choose one or more categories…",
             )
 
             st.caption(f"{len(selected)} selected")
 
-            if st.button("Generate File", disabled=len(selected) == 0, type="primary", key="gen_file_btn"):
-                items = fetch_items_by_cat(categories=selected) 
+            if st.button("Generate File", disabled=len(selected) == 0, type="primary", key="gen_file_btn_restock"):
+                items = fetch_items_by_cat(categories=selected)
                 if not items:
                     st.warning("No items found for the selected categories.")
                 else:
-                    excel_bytes = generate_restock_file_by_categories_template(
-                        items
-                    )
+                    excel_bytes = generate_restock_file_by_categories_template(items)
                     st.session_state["pc_excel_bytes"] = excel_bytes
                     st.success("Template generated. Use the button below to download it.")
 
@@ -175,7 +195,7 @@ elif active_menu == "Inventory" and active_submenu == "Restock Manager":
                     data=st.session_state["pc_excel_bytes"],
                     file_name="ReorderingQuantities.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    key="dl_sheet_btn",
+                    key="dl_sheet_btn_restock",
                 )
 
 elif active_menu == "Dashboard":
@@ -184,10 +204,18 @@ elif active_menu == "Dashboard":
 elif active_menu == "Inventory":
     show_dashboard()
 
-        
-#elseif active_menu == "Settings":
-#    st.subheader("⚙️ Settings")
+elif active_menu == "HubSpot" and active_submenu == "Create New Leads File":
+    show_hubspot_file_creator()
 
+elif active_menu == "HubSpot" and active_submenu == "Update Leads":
+    show_update_lead_form()
+
+elif active_menu == "HubSpot":
+    show_update_lead_form()
+
+elif active_menu == "Google Earth":
+    show_google_form()
+
+# Default
 else:
     show_general_dashboard()
-
