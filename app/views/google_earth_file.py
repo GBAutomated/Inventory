@@ -5,7 +5,6 @@ import hashlib
 import pandas as pd
 import streamlit as st
 
-
 from datetime import datetime
 from typing import Any, Dict, Tuple, List
 from app.services.google_earth_service import (
@@ -14,6 +13,25 @@ from app.services.google_earth_service import (
     storage_upload_bytes,
     storage_signed_url,
 )
+
+def _safe_stretch_button(label: str, key: str, button_type: str | None = None):
+    """
+    Create a full-width button across Streamlit versions.
+
+    Tries in order:
+    1) New API: st.button(..., width="stretch", type=button_type)
+    2) Old API with type: st.button(..., use_container_width=True, type=button_type)
+    3) Old API without type: st.button(..., use_container_width=True)
+
+    Returns the boolean click state.
+    """
+    try:
+        return st.button(label, key=key, width="stretch", type=button_type)
+    except TypeError:
+        try:
+            return st.button(label, key=key, use_container_width=True, type=button_type)
+        except TypeError:
+            return st.button(label, key=key, use_container_width=True)
 
 
 REQ_COLS = [
@@ -227,7 +245,6 @@ def run_compare_flow(new_file_bytes: bytes, baseline_file_bytes: bytes | None) -
         "invalid_samples": new_samples,
     }
 
-
 # UI
 
 BUCKET = "google_earth_files"
@@ -290,12 +307,10 @@ def show_google_form():
                 storage_upload_bytes(client, BUCKET, BASELINE_KEY, new_bytes, upsert=True)
                 st.success("Baseline updated automatically (current/latest.xlsx).")
             else:
-                if st.button("Replace baseline with NEW file", type="primary"):
+                if _safe_stretch_button("Replace baseline with NEW file", key="replace_btn", button_type="primary"):
                     storage_upload_bytes(client, BUCKET, BASELINE_KEY, new_bytes, upsert=True)
                     st.success("Baseline updated (current/latest.xlsx).")
                 else:
                     st.info("Baseline not replaced yet. Click the button to proceed.")
-
     else:
         st.info("Upload the NEW .xlsx file to start the comparison.")
-
