@@ -101,4 +101,4 @@ def show_stockout_section():
         template="plotly_dark"
     )
 
-    st.plotly_chart(fig, width="container")
+    st.plotly_chart(fig, width="stretch")
