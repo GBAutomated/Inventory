@@ -77,7 +77,3 @@ def show_demand_exceeds_stock_section():
     )
 
     st.plotly_chart(fig, width="stretch")
-<<<<<<< HEAD
-=======
-
->>>>>>> origin/main
