@@ -76,4 +76,4 @@ def show_demand_exceeds_stock_section():
         template="plotly_dark"
     )
 
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="container")

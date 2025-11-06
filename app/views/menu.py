@@ -28,7 +28,8 @@ def show_sidebar_menu():
 
         def uniform_button(label, key):
             # Consistent sidebar buttons
-            return st.button(label, key=key, use_container_width=True)
+            return st.button(label, key=key, use_container_width=True) 
+
 
         # ==== Main Menu ====
         if uniform_button("📈 Dashboard", key="btn_dashboard"):

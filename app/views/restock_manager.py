@@ -286,7 +286,7 @@ def show_restock_table_and_file_download():
         view[cols_view],
         hide_index=True,
         num_rows="fixed",
-        use_container_width=True,
+        width="container",
         column_config={
             "select":       st.column_config.CheckboxColumn("Pick", help="Add/Remove"),
             "code":         st.column_config.TextColumn("Code", width="small"),
