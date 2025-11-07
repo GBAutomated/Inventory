@@ -35,7 +35,7 @@ def _today_date_str() -> str:
     return teg_now.strftime("%Y-%m-%d")
 
 def _norm_id(val) -> str:
-    """Normaliza Id: trim, quita comas, 123.0->'123'; mantiene alfanumérico."""
+    """Normalize Id: trim, remove commas, 123.0->'123'; keep alphanumeric."""
     if val is None:
         return ""
     s = str(val).strip()
@@ -53,7 +53,7 @@ def _norm_id(val) -> str:
     return s
 
 def _fmt_mmddyyyy(val) -> str:
-    """Formatea a mm/dd/YYYY si parsea; si no, deja ''."""
+    """Format to mm/dd/YYYY if parseable; else return ''."""
     s = "" if val is None else str(val).strip()
     if s == "" or s.lower() in {"nan", "null", "none"}:
         return ""
@@ -77,10 +77,7 @@ def _normalize_yes_no_ge(val: str) -> str:
     return ""
 
 def _parse_to_mmddyyyy_ge(val) -> str:
-    """
-    Devuelve mm/dd/YYYY o ''.
-    Acepta: datetime/Timestamp, 'mm/dd/YYYY', 'YYYY-mm-dd', serial Excel razonable (1..60000).
-    """
+
     if val is None:
         return ""
     if isinstance(val, (datetime, pd.Timestamp)):
@@ -102,7 +99,7 @@ def _parse_to_mmddyyyy_ge(val) -> str:
         return datetime.strptime(s, "%Y-%m-%d").strftime("%m/%d/%Y")
     except Exception:
         pass
-    # serial Excel dentro de rango
+    # Excel serial within range
     try:
         f = float(s)
         days = int(f)
@@ -114,17 +111,11 @@ def _parse_to_mmddyyyy_ge(val) -> str:
     except Exception:
         return ""
 
-
-# =========================
-# Column configs of your cleaner
-# =========================
-
 DATETIME_COLS = [
     "LastActionAt", "LastEmailedAt", "ClosingDate", "ClosedLostAt", "CancelledAt",
     "EstimateCreatedAt", "EstimateModifiedAt", "CreatedAt", "ModifiedAt",
 ]
 
-# Google Earth dates incluidas aquí (también se formatearán desde overlay)
 DATE_ONLY_COLS = [
     "CalendarEventAt", "CalendarEventEnd", "FollowUpDate", "ClosedWonAt",
     "Google Earth Last Picture At", "Google Earth Last Checked At",
@@ -159,7 +150,7 @@ DEFAULTS_AFTER_LEADSTATUS = {
 }
 
 SUPABASE_TO_FILE_COLS = {
-    "asked_to_be_contacted_on": "Asked To Be Contacted On",     # TEXTO
+    "asked_to_be_contacted_on": "Asked To Be Contacted On",
     "asked_contact_for_promos_date": "Asked Contact For Promos Date",
     "asked_contact_for_promos": "Asked Contact For Promos",
     "asked_contact_next_year_date": "Asked Contact Next Year Date",
@@ -171,7 +162,6 @@ SUPABASE_TO_FILE_COLS = {
 SUPABASE_ID_FIELD = "lead"
 SUPABASE_EMAIL_FIELD = "email"
 
-# Aliases tolerantes
 COLUMN_ALIASES = {
     "Eligible For Emails": "Eligible for Emails",
     "Asked to be contacted on": "Asked To Be Contacted On",
@@ -180,10 +170,6 @@ COLUMN_ALIASES = {
     "Asked contact next year date": "Asked Contact Next Year Date",
 }
 
-
-# =========================
-# Core cleaning/helpers
-# =========================
 
 def normalize_column_names(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
@@ -295,7 +281,7 @@ def format_zipcode_column(df: pd.DataFrame, col_name: str = "ZipCode") -> pd.Dat
     return out
 
 def insert_columns(df: pd.DataFrame, before: Optional[str], after: Optional[str], cols_with_defaults: Dict[str, str]) -> pd.DataFrame:
-    """Inserta columnas que faltan; si existen, rellena blancos con su default (sin sobreescribir valores)."""
+
     out = df.copy()
 
     def _insert_at(df_, idx_, col_name, default_val):
@@ -328,7 +314,6 @@ def insert_columns(df: pd.DataFrame, before: Optional[str], after: Optional[str]
             if name not in out.columns:
                 out[name] = cols_with_defaults.get(name, "")
             else:
-                # si existe, respeta dato y solo rellena vacíos con default
                 mask_blank = out[name].astype(str).str.strip().eq("")
                 dflt = cols_with_defaults.get(name, "")
                 if dflt != "":
@@ -356,12 +341,7 @@ def enrich_from_previous_for_columns(current: pd.DataFrame, previous: Optional[p
 
 def apply_after_leadstatus_rules(current: pd.DataFrame, previous: Optional[pd.DataFrame],
                                  defaults: Dict[str, str], cols: List[str], id_col: str = "Id") -> Tuple[pd.DataFrame, int]:
-    """
-    Regla:
-      - Si la columna no existe → se crea con default.
-      - Si existe y está en blanco → pone default.
-      - Si el previo tiene NO default y el actual quedó en default → tomar el previo.
-    """
+
     out = current.copy()
     replacements = 0
     for c in cols:
@@ -393,11 +373,6 @@ def apply_after_leadstatus_rules(current: pd.DataFrame, previous: Optional[pd.Da
         merged.drop(columns=[prev_c], inplace=True)
     return merged, replacements
 
-
-# =========================
-# Supabase REST (updates table)
-# =========================
-
 def _fetch_pending_updates_from_supabase() -> Tuple[List[Dict], Optional[str]]:
     try:
         if not SUPABASE_URL or not SUPABASE_KEY:
@@ -413,9 +388,13 @@ def _fetch_pending_updates_from_supabase() -> Tuple[List[Dict], Optional[str]]:
     except Exception as e:
         return [], f"Supabase GET exception: {e}"
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _cached_fetch_pending_updates() -> Tuple[List[Dict], Optional[str]]:
+    return _fetch_pending_updates_from_supabase()
+
 def apply_supabase_pending_updates(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, int], List[str]]:
     out = df.copy()
-    updates, err = _fetch_pending_updates_from_supabase()
+    updates, err = _cached_fetch_pending_updates()
     stats = {"pending": 0, "matched_rows": 0, "cells_written": 0, "unmatched": 0}
     processed_update_ids: List[str] = []
 
@@ -458,7 +437,6 @@ def apply_supabase_pending_updates(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict
             if em and em != "nan":
                 email_pos_map[em] = pos
 
-    # IMPORTANT: SOLO estas 2 se formatean como fecha desde Supabase.
     DATE_KEYS = {
         "asked_contact_for_promos_date",
         "asked_contact_next_year_date",
@@ -547,6 +525,7 @@ def mark_lead_updates_as_added(update_ids: List[str]) -> Tuple[int, Optional[str
 
     return updated_total, None
 
+# Storage + Caching 
 
 def _headers_for_storage() -> Dict[str, str]:
     return {
@@ -568,10 +547,15 @@ def _download_latest_google_earth_bytes() -> Tuple[Optional[bytes], Optional[str
     except Exception as e:
         return None, f"Storage GET exception: {e}"
 
-# Google Earth 
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_download_latest_google_earth_bytes() -> Tuple[Optional[bytes], Optional[str]]:
+    return _download_latest_google_earth_bytes()
+
+# Google Earth overlay
 
 def _load_google_earth_latest_df() -> Tuple[Optional[pd.DataFrame], Dict[str, str], Optional[str]]:
-    b, err = _download_latest_google_earth_bytes()
+
+    b, err = _cached_download_latest_google_earth_bytes()
     if err:
         return None, {}, err
     if b is None:
@@ -687,7 +671,11 @@ def overlay_google_earth_latest(df: pd.DataFrame) -> pd.DataFrame:
 # UI
 
 def show_hubspot_file_creator():
-    st.set_page_config(page_title="Leads File Cleaner", layout="wide")
+    # Avoid resetting page config on every rerun
+    if not st.session_state.get("_page_cfg_set"):
+        st.set_page_config(page_title="Leads File Cleaner", layout="wide")
+        st.session_state["_page_cfg_set"] = True
+
     st.title("🧹 Leads File Cleaner")
 
     if "ui_init_done" not in st.session_state:
@@ -741,7 +729,8 @@ def show_hubspot_file_creator():
         main_df, _ = load_file(main_file)
         main_df = normalize_column_names(main_df)
     except Exception as e:
-        st.error(f"Failed to load main file: {e}")
+        st.error("Failed to load main file.")
+        st.exception(e)
         return
 
     prev_df = None
@@ -750,41 +739,52 @@ def show_hubspot_file_creator():
             prev_df, _ = load_file(prev_file)
             prev_df = normalize_column_names(prev_df)
         except Exception as e:
-            st.warning(f"Failed to load previous file: {e}")
+            st.warning("Failed to load previous file.")
+            st.exception(e)
 
     # -------- Process --------
     if st.button("🚀 Process", key="process_btn"):
-        try:
-            df = main_df.copy()
+        with st.spinner("Processing file..."):
+            try:
+                with st.status("Running steps…", expanded=True) as status:
+                    st.write("Step 1/6: Cleaning date-like columns")
+                    df = main_df.copy()
+                    df, _ = clean_majority_date_like_columns(df)
 
-            df, _ = clean_majority_date_like_columns(df)
-            df, _ = format_datetime_columns(df, DATETIME_COLS, "%m/%d/%Y %I:%M %p")
-            df, _ = format_datetime_columns(df, DATE_ONLY_COLS, "%m/%d/%Y")
-            _, _ = format_phone_columns(df, PHONE_COLS)
-            df = format_zipcode_column(df)
+                    st.write("Step 2/6: Formatting date/time columns")
+                    df, _ = format_datetime_columns(df, DATETIME_COLS, "%m/%d/%Y %I:%M %p")
+                    df, _ = format_datetime_columns(df, DATE_ONLY_COLS, "%m/%d/%Y")
 
-            cols_with_defaults = {**{c: "" for c in BEFORE_ZIPCODE}, **DEFAULTS_AFTER_LEADSTATUS}
-            df = insert_columns(df, before="ZipCode", after="LeadStatus", cols_with_defaults=cols_with_defaults)
+                    st.write("Step 3/6: Formatting phone and ZipCode")
+                    _, _ = format_phone_columns(df, PHONE_COLS)
+                    df = format_zipcode_column(df)
 
-            df, _ = enrich_from_previous_for_columns(df, prev_df, BEFORE_ZIPCODE)
-            df, _ = apply_after_leadstatus_rules(df, prev_df, DEFAULTS_AFTER_LEADSTATUS, AFTER_LEADSTATUS)
+                    st.write("Step 4/6: Inserting defaults & enriching from previous")
+                    cols_with_defaults = {**{c: "" for c in BEFORE_ZIPCODE}, **DEFAULTS_AFTER_LEADSTATUS}
+                    df = insert_columns(df, before="ZipCode", after="LeadStatus", cols_with_defaults=cols_with_defaults)
+                    df, _ = enrich_from_previous_for_columns(df, prev_df, BEFORE_ZIPCODE)
+                    df, _ = apply_after_leadstatus_rules(df, prev_df, DEFAULTS_AFTER_LEADSTATUS, AFTER_LEADSTATUS)
 
-            df, sb_stats, processed_ids = apply_supabase_pending_updates(df)
+                    st.write("Step 5/6: Applying Supabase pending updates (cached)")
+                    df, sb_stats, processed_ids = apply_supabase_pending_updates(df)
 
-            df = overlay_google_earth_latest(df)
+                    st.write("Step 6/6: Overlay Google Earth latest (cached)")
+                    df = overlay_google_earth_latest(df)
 
-            df = df.fillna("")
-            st.success("✅ File processed. You can now generate the final file.")
+                    df = df.fillna("")
+                    st.success("File processed. You can now generate the final file.")
+                    status.update(label="Processing complete", state="complete")
 
-            st.session_state["processed_df_df"] = df
-            st.session_state["pending_processed_ids"] = processed_ids
-            st.session_state["updates_marked"] = False
-            st.session_state["final_ready"] = False
-            st.session_state["final_csv_bytes"] = None
-            st.session_state["final_xlsx_bytes"] = None
+                st.session_state["processed_df_df"] = df
+                st.session_state["pending_processed_ids"] = processed_ids
+                st.session_state["updates_marked"] = False
+                st.session_state["final_ready"] = False
+                st.session_state["final_csv_bytes"] = None
+                st.session_state["final_xlsx_bytes"] = None
 
-        except Exception as e:
-            st.error(f"Processing failed: {e}")
+            except Exception as e:
+                st.error("Processing failed.")
+                st.exception(e)
 
     # -------- Generate Final File --------
     if st.session_state.get("processed_df_df") is not None:
@@ -795,22 +795,22 @@ def show_hubspot_file_creator():
             st.session_state["final_xlsx_bytes"] = None
 
             if st.button("🔧 Generate Final File", key="gen_final_btn"):
-
-                if not st.session_state.get("updates_marked", False):
-                    processed_ids = st.session_state.get("pending_processed_ids", [])
-                    if processed_ids:
-                        updated_count, err = mark_lead_updates_as_added(processed_ids)
-                        if err:
-                            st.error(f"Failed to mark Supabase updates as added: {err}")
-                            return
-                        else:
-                            st.success(f"✅ Supabase updated: {updated_count} row(s).")
-                            st.session_state["updates_marked"] = True
-                            st.session_state["pending_processed_ids"] = []
-                    else:
-                        st.session_state["updates_marked"] = True
-
                 try:
+                    # Mark processed updates once
+                    if not st.session_state.get("updates_marked", False):
+                        processed_ids = st.session_state.get("pending_processed_ids", [])
+                        if processed_ids:
+                            updated_count, err = mark_lead_updates_as_added(processed_ids)
+                            if err:
+                                st.error(f"Failed to mark Supabase updates as added: {err}")
+                                return
+                            else:
+                                st.success(f"Supabase updated: {updated_count} row(s).")
+                                st.session_state["updates_marked"] = True
+                                st.session_state["pending_processed_ids"] = []
+                        else:
+                            st.session_state["updates_marked"] = True
+
                     df_final = st.session_state["processed_df_df"]
                     csv_bytes = df_final.to_csv(index=False).encode("utf-8")
                     xlsx_bytes = io.BytesIO()
@@ -821,9 +821,10 @@ def show_hubspot_file_creator():
                     st.session_state["final_csv_bytes"] = csv_bytes
                     st.session_state["final_xlsx_bytes"] = xlsx_bytes.getvalue()
                     st.session_state["final_ready"] = True
-                    st.success("✅ Final file generated.")
+                    st.success("Final file generated.")
                 except Exception as e:
-                    st.error(f"Failed generating final file: {e}")
+                    st.error("Failed generating final file.")
+                    st.exception(e)
                     return
 
         if st.session_state.get("final_ready", False):
@@ -844,5 +845,4 @@ def show_hubspot_file_creator():
                 file_name=xlsx_name,
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="dl_xlsx_final_btn",
-    )
-
+            )
