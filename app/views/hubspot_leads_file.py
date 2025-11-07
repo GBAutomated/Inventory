@@ -200,21 +200,26 @@ def normalize_column_names(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def load_file(uploaded_file) -> Tuple[pd.DataFrame, Optional[str]]:
+
     file_bytes = uploaded_file.read()
     name = uploaded_file.name.lower()
+    size = getattr(uploaded_file, "size", None)
+    slog(f"load_file: name={name} size={size}")
+
     if name.endswith((".csv", ".txt")):
         df = pd.read_csv(io.BytesIO(file_bytes))
         return df, None
+
     elif name.endswith((".xlsx", ".xls")):
-        xl = pd.ExcelFile(io.BytesIO(file_bytes))
-        key = "_sheet_choice__" + name
-        sheet = st.session_state.get(key) or xl.sheet_names[0]
-        if sheet not in xl.sheet_names:
-            sheet = xl.sheet_names[0]
-        df = xl.parse(sheet)
-        return df, sheet
+        # openpyxl es seguro para .xlsx; xlrd no soporta xlsx desde 2.0
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl", dtype=str)
+        return df, None
+
     else:
         raise ValueError("Unsupported file type. Please upload CSV or Excel (.xlsx/.xls).")
+
 
 def ensure_datetime_series(s: pd.Series) -> pd.Series:
     if pd.api.types.is_datetime64_any_dtype(s):
@@ -760,6 +765,7 @@ def show_hubspot_file_creator():
         with step_log("Load main file"):
             main_df, _ = load_file(main_file)
             main_df = normalize_column_names(main_df)
+            slog(f"Main columns: {list(main_df.columns)[:12]} ... total={len(main_df.columns)}")
             slog(f"Main df loaded: shape={main_df.shape}")
     except Exception as e:
         st.error(f"Failed to load main file: {e}")
@@ -769,13 +775,46 @@ def show_hubspot_file_creator():
     prev_df = None
     if prev_file:
         try:
-            with step_log("Load previous file"):
-                prev_df, _ = load_file(prev_file)
-                prev_df = normalize_column_names(prev_df)
-                slog(f"Prev df loaded: shape={prev_df.shape}")
+            prev_size = getattr(prev_file, "size", 0) or 0
+            slog(f"Prev file announced: name={prev_file.name} size={prev_size} bytes")
+
+            MAX_SAFE_BYTES = 6_000_000 
+            if prev_size > MAX_SAFE_BYTES:
+                st.warning("Previous file is large; skipping previous-file enrichment to protect memory on Render.")
+                slog(f"Prev file skipped due to size > {MAX_SAFE_BYTES} (actual={prev_size})")
+            else:
+                wanted_cols = set(["Id", "Email"] + BEFORE_ZIPCODE + AFTER_LEADSTATUS)
+
+                def _usecols(colname: str) -> bool:
+                    c = str(colname).strip()
+                    return (c in wanted_cols) or (c.lower() in {w.lower() for w in wanted_cols})
+
+                with step_log("Load previous file (filtered columns)"):
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", UserWarning)
+                        pdf = pd.read_excel(
+                            prev_file,
+                            engine="openpyxl",
+                            dtype=str,
+                            usecols=_usecols
+                        )
+                    prev_df = normalize_column_names(pdf)
+                    slog(f"Prev df (filtered) loaded: shape={prev_df.shape}")
+
+                if prev_df is None or prev_df.empty or "Id" not in prev_df.columns:
+                    with step_log("Load previous file (full fallback)"):
+                        prev_file.seek(0)
+                        with warnings.catch_warnings():
+                            warnings.simplefilter("ignore", UserWarning)
+                            pdf_full = pd.read_excel(prev_file, engine="openpyxl", dtype=str)
+                        prev_df = normalize_column_names(pdf_full)
+                        slog(f"Prev df (full) loaded: shape={prev_df.shape}")
+
         except Exception as e:
-            st.warning(f"Failed to load previous file: {e}")
-            slog(f"Load previous file FAILED: {e}", "error")
+            st.warning(f"Failed to load previous file (continuing without it): {e}")
+            slog(f"Load previous file FAILED hard: {e}", "error")
+            prev_df = None
+
 
     # Start processing
     if st.button("🚀 Process", key="process_btn", help="Run the cleaning pipeline"):
