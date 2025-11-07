@@ -27,15 +27,14 @@ GE_LATEST_KEY = os.getenv("GE_LATEST_KEY", "current/latest.xlsx")
 
 UPDATES_TABLE = "Hubspot_Leads_Updates"
 
-# Helpers
-
 def _today_date_str() -> str:
+
     utc_now = datetime.utcnow()
     teg_now = utc_now - timedelta(hours=6)
     return teg_now.strftime("%Y-%m-%d")
 
 def _norm_id(val) -> str:
-    """Normalize Id: trim, remove commas, 123.0->'123'; keep alphanumeric."""
+
     if val is None:
         return ""
     s = str(val).strip()
@@ -53,7 +52,7 @@ def _norm_id(val) -> str:
     return s
 
 def _fmt_mmddyyyy(val) -> str:
-    """Format to mm/dd/YYYY if parseable; else return ''."""
+
     s = "" if val is None else str(val).strip()
     if s == "" or s.lower() in {"nan", "null", "none"}:
         return ""
@@ -89,17 +88,17 @@ def _parse_to_mmddyyyy_ge(val) -> str:
     s = str(val).strip()
     if s == "" or s.lower() in {"nan", "null", "none", "nat", "-"}:
         return ""
-    # mm/dd/YYYY
+
     try:
         return datetime.strptime(s, "%m/%d/%Y").strftime("%m/%d/%Y")
     except Exception:
         pass
-    # YYYY-mm-dd
+
     try:
         return datetime.strptime(s, "%Y-%m-%d").strftime("%m/%d/%Y")
     except Exception:
         pass
-    # Excel serial within range
+
     try:
         f = float(s)
         days = int(f)
@@ -341,7 +340,12 @@ def enrich_from_previous_for_columns(current: pd.DataFrame, previous: Optional[p
 
 def apply_after_leadstatus_rules(current: pd.DataFrame, previous: Optional[pd.DataFrame],
                                  defaults: Dict[str, str], cols: List[str], id_col: str = "Id") -> Tuple[pd.DataFrame, int]:
-
+    """
+    Rule:
+      - If the column does not exist → create with default.
+      - If it exists and is blank → set default.
+      - If previous has NOT default and the current ended as default → take previous.
+    """
     out = current.copy()
     replacements = 0
     for c in cols:
@@ -373,6 +377,7 @@ def apply_after_leadstatus_rules(current: pd.DataFrame, previous: Optional[pd.Da
         merged.drop(columns=[prev_c], inplace=True)
     return merged, replacements
 
+
 def _fetch_pending_updates_from_supabase() -> Tuple[List[Dict], Optional[str]]:
     try:
         if not SUPABASE_URL or not SUPABASE_KEY:
@@ -388,13 +393,9 @@ def _fetch_pending_updates_from_supabase() -> Tuple[List[Dict], Optional[str]]:
     except Exception as e:
         return [], f"Supabase GET exception: {e}"
 
-@st.cache_data(ttl=60, show_spinner=False)
-def _cached_fetch_pending_updates() -> Tuple[List[Dict], Optional[str]]:
-    return _fetch_pending_updates_from_supabase()
-
 def apply_supabase_pending_updates(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, int], List[str]]:
     out = df.copy()
-    updates, err = _cached_fetch_pending_updates()
+    updates, err = _fetch_pending_updates_from_supabase()
     stats = {"pending": 0, "matched_rows": 0, "cells_written": 0, "unmatched": 0}
     processed_update_ids: List[str] = []
 
@@ -525,7 +526,6 @@ def mark_lead_updates_as_added(update_ids: List[str]) -> Tuple[int, Optional[str
 
     return updated_total, None
 
-# Storage + Caching 
 
 def _headers_for_storage() -> Dict[str, str]:
     return {
@@ -547,15 +547,8 @@ def _download_latest_google_earth_bytes() -> Tuple[Optional[bytes], Optional[str
     except Exception as e:
         return None, f"Storage GET exception: {e}"
 
-@st.cache_data(ttl=300, show_spinner=False)
-def _cached_download_latest_google_earth_bytes() -> Tuple[Optional[bytes], Optional[str]]:
-    return _download_latest_google_earth_bytes()
-
-# Google Earth overlay
-
 def _load_google_earth_latest_df() -> Tuple[Optional[pd.DataFrame], Dict[str, str], Optional[str]]:
-
-    b, err = _cached_download_latest_google_earth_bytes()
+    b, err = _download_latest_google_earth_bytes()
     if err:
         return None, {}, err
     if b is None:
@@ -671,10 +664,10 @@ def overlay_google_earth_latest(df: pd.DataFrame) -> pd.DataFrame:
 # UI
 
 def show_hubspot_file_creator():
-    # Avoid resetting page config on every rerun
-    if not st.session_state.get("_page_cfg_set"):
+
+    if not st.session_state.get("__page_cfg_set__", False):
         st.set_page_config(page_title="Leads File Cleaner", layout="wide")
-        st.session_state["_page_cfg_set"] = True
+        st.session_state["__page_cfg_set__"] = True
 
     st.title("🧹 Leads File Cleaner")
 
@@ -725,68 +718,82 @@ def show_hubspot_file_creator():
         st.session_state.update({"final_ready": False, "final_csv_bytes": None, "final_xlsx_bytes": None})
         return
 
-    try:
-        main_df, _ = load_file(main_file)
-        main_df = normalize_column_names(main_df)
-    except Exception as e:
-        st.error("Failed to load main file.")
-        st.exception(e)
-        return
-
-    prev_df = None
-    if prev_file:
+    with st.spinner("Loading files..."):
         try:
-            prev_df, _ = load_file(prev_file)
-            prev_df = normalize_column_names(prev_df)
+            main_df, _ = load_file(main_file)
+            main_df = normalize_column_names(main_df)
         except Exception as e:
-            st.warning("Failed to load previous file.")
-            st.exception(e)
+            st.error(f"Failed to load main file: {e}")
+            return
+
+        prev_df = None
+        if prev_file:
+            try:
+                prev_df, _ = load_file(prev_file)
+                prev_df = normalize_column_names(prev_df)
+            except Exception as e:
+                st.warning(f"Failed to load previous file: {e}")
 
     # -------- Process --------
     if st.button("🚀 Process", key="process_btn"):
-        with st.spinner("Processing file..."):
-            try:
-                with st.status("Running steps…", expanded=True) as status:
-                    st.write("Step 1/6: Cleaning date-like columns")
-                    df = main_df.copy()
-                    df, _ = clean_majority_date_like_columns(df)
+        progress = st.progress(0)
+        status = st.empty()
+        try:
+            step = 0
+            total_steps = 8  # keep in sync with increments
 
-                    st.write("Step 2/6: Formatting date/time columns")
-                    df, _ = format_datetime_columns(df, DATETIME_COLS, "%m/%d/%Y %I:%M %p")
-                    df, _ = format_datetime_columns(df, DATE_ONLY_COLS, "%m/%d/%Y")
+            status.info("Cleaning date-like columns...")
+            df, _ = clean_majority_date_like_columns(main_df)
+            step += 1; progress.progress(int(step * 100 / total_steps))
 
-                    st.write("Step 3/6: Formatting phone and ZipCode")
-                    _, _ = format_phone_columns(df, PHONE_COLS)
-                    df = format_zipcode_column(df)
+            status.info("Formatting datetime columns...")
+            df, _ = format_datetime_columns(df, DATETIME_COLS, "%m/%d/%Y %I:%M %p")
+            step += 1; progress.progress(int(step * 100 / total_steps))
 
-                    st.write("Step 4/6: Inserting defaults & enriching from previous")
-                    cols_with_defaults = {**{c: "" for c in BEFORE_ZIPCODE}, **DEFAULTS_AFTER_LEADSTATUS}
-                    df = insert_columns(df, before="ZipCode", after="LeadStatus", cols_with_defaults=cols_with_defaults)
-                    df, _ = enrich_from_previous_for_columns(df, prev_df, BEFORE_ZIPCODE)
-                    df, _ = apply_after_leadstatus_rules(df, prev_df, DEFAULTS_AFTER_LEADSTATUS, AFTER_LEADSTATUS)
+            status.info("Formatting date-only columns...")
+            df, _ = format_datetime_columns(df, DATE_ONLY_COLS, "%m/%d/%Y")
+            step += 1; progress.progress(int(step * 100 / total_steps))
 
-                    st.write("Step 5/6: Applying Supabase pending updates (cached)")
-                    df, sb_stats, processed_ids = apply_supabase_pending_updates(df)
+            status.info("Formatting phones and zipcode...")
+            _, _ = format_phone_columns(df, PHONE_COLS)
+            df = format_zipcode_column(df)
+            step += 1; progress.progress(int(step * 100 / total_steps))
 
-                    st.write("Step 6/6: Overlay Google Earth latest (cached)")
-                    df = overlay_google_earth_latest(df)
+            status.info("Inserting required columns with defaults...")
+            cols_with_defaults = {**{c: "" for c in BEFORE_ZIPCODE}, **DEFAULTS_AFTER_LEADSTATUS}
+            df = insert_columns(df, before="ZipCode", after="LeadStatus", cols_with_defaults=cols_with_defaults)
+            step += 1; progress.progress(int(step * 100 / total_steps))
 
-                    df = df.fillna("")
-                    st.success("File processed. You can now generate the final file.")
-                    status.update(label="Processing complete", state="complete")
+            status.info("Enriching from previous file (if provided)...")
+            df, _ = enrich_from_previous_for_columns(df, prev_df, BEFORE_ZIPCODE)
+            df, _ = apply_after_leadstatus_rules(df, prev_df, DEFAULTS_AFTER_LEADSTATUS, AFTER_LEADSTATUS)
+            step += 1; progress.progress(int(step * 100 / total_steps))
 
-                st.session_state["processed_df_df"] = df
-                st.session_state["pending_processed_ids"] = processed_ids
-                st.session_state["updates_marked"] = False
-                st.session_state["final_ready"] = False
-                st.session_state["final_csv_bytes"] = None
-                st.session_state["final_xlsx_bytes"] = None
+            status.info("Applying pending updates from Supabase...")
+            df, sb_stats, processed_ids = apply_supabase_pending_updates(df)
+            step += 1; progress.progress(int(step * 100 / total_steps))
 
-            except Exception as e:
-                st.error("Processing failed.")
-                st.exception(e)
+            status.info("Overlaying Google Earth latest data...")
+            df = overlay_google_earth_latest(df)
+            df = df.fillna("")
+            step += 1; progress.progress(int(step * 100 / total_steps))
 
-    # -------- Generate Final File --------
+            st.success("✅ File processed. You can now generate the final file.")
+            st.caption(f"Supabase updates matched: {sb_stats.get('matched_rows', 0)} • written cells: {sb_stats.get('cells_written', 0)}")
+
+            st.session_state["processed_df_df"] = df
+            st.session_state["pending_processed_ids"] = processed_ids
+            st.session_state["updates_marked"] = False
+            st.session_state["final_ready"] = False
+            st.session_state["final_csv_bytes"] = None
+            st.session_state["final_xlsx_bytes"] = None
+        except Exception as e:
+            st.error(f"Processing failed: {e}")
+        finally:
+            status.empty()
+            progress.empty()
+
+    # -------- Generate Final  --------
     if st.session_state.get("processed_df_df") is not None:
         st.divider()
 
@@ -795,8 +802,7 @@ def show_hubspot_file_creator():
             st.session_state["final_xlsx_bytes"] = None
 
             if st.button("🔧 Generate Final File", key="gen_final_btn"):
-                try:
-                    # Mark processed updates once
+                with st.spinner("Finalizing file and marking updates..."):
                     if not st.session_state.get("updates_marked", False):
                         processed_ids = st.session_state.get("pending_processed_ids", [])
                         if processed_ids:
@@ -805,27 +811,27 @@ def show_hubspot_file_creator():
                                 st.error(f"Failed to mark Supabase updates as added: {err}")
                                 return
                             else:
-                                st.success(f"Supabase updated: {updated_count} row(s).")
+                                st.success(f"✅ Supabase updated: {updated_count} row(s).")
                                 st.session_state["updates_marked"] = True
                                 st.session_state["pending_processed_ids"] = []
                         else:
                             st.session_state["updates_marked"] = True
 
-                    df_final = st.session_state["processed_df_df"]
-                    csv_bytes = df_final.to_csv(index=False).encode("utf-8")
-                    xlsx_bytes = io.BytesIO()
-                    with pd.ExcelWriter(xlsx_bytes, engine="openpyxl") as writer:
-                        df_final.to_excel(writer, index=False, sheet_name="Processed")
-                    xlsx_bytes.seek(0)
+                    try:
+                        df_final = st.session_state["processed_df_df"]
+                        csv_bytes = df_final.to_csv(index=False).encode("utf-8")
+                        xlsx_bytes = io.BytesIO()
+                        with pd.ExcelWriter(xlsx_bytes, engine="openpyxl") as writer:
+                            df_final.to_excel(writer, index=False, sheet_name="Processed")
+                        xlsx_bytes.seek(0)
 
-                    st.session_state["final_csv_bytes"] = csv_bytes
-                    st.session_state["final_xlsx_bytes"] = xlsx_bytes.getvalue()
-                    st.session_state["final_ready"] = True
-                    st.success("Final file generated.")
-                except Exception as e:
-                    st.error("Failed generating final file.")
-                    st.exception(e)
-                    return
+                        st.session_state["final_csv_bytes"] = csv_bytes
+                        st.session_state["final_xlsx_bytes"] = xlsx_bytes.getvalue()
+                        st.session_state["final_ready"] = True
+                        st.success("✅ Final file generated.")
+                    except Exception as e:
+                        st.error(f"Failed generating final file: {e}")
+                        return
 
         if st.session_state.get("final_ready", False):
             today_tag = _today_date_str()
