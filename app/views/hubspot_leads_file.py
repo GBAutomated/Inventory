@@ -16,7 +16,7 @@ from urllib3.util.retry import Retry
 import streamlit as st
 from dotenv import load_dotenv
 
-# Configuración inicial
+
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -25,7 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger("leads_file_cleaner")
 
 def slog(msg: str, level: str = "info", extra=None):
-    """Server log mejorado"""
+
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
     
     log_msg = f"[{timestamp}] [leads-cleaner] {msg}"
@@ -36,7 +36,7 @@ def slog(msg: str, level: str = "info", extra=None):
     getattr(logger, level.lower(), logger.info)(msg)
 
 class step_log:
-    """Context manager to time steps and log start/end + df shapes."""
+
     def __init__(self, name: str):
         self.name = name
         self.t0 = None
@@ -56,10 +56,9 @@ class step_log:
         return False
 
 def create_session_with_retries():
-    """Crear sesión con retries y timeout configurado"""
     session = requests.Session()
     
-    # Estrategia de retry
+
     retry_strategy = Retry(
         total=3,
         status_forcelist=[429, 500, 502, 503, 504],
@@ -74,13 +73,12 @@ def create_session_with_retries():
     return session
 
 def safe_dataframe_operation(func, *args, **kwargs):
-    """Ejecutar operaciones con DataFrames de forma segura"""
+
     slog(f"Starting dataframe operation: {func.__name__}")
     
     try:
         result = func(*args, **kwargs)
         
-        # Forzar garbage collection periódicamente
         gc.collect()
             
         return result
@@ -240,39 +238,61 @@ def normalize_column_names(df: pd.DataFrame) -> pd.DataFrame:
         out = out.rename(columns=rename_map)
     return out
 
+def load_file(uploaded_file) -> Tuple[pd.DataFrame, Optional[str]]:
+
+    file_bytes = uploaded_file.read()
+    name = uploaded_file.name.lower()
+    size = getattr(uploaded_file, "size", None)
+    slog(f"load_file: name={name} size={size}")
+
+    file_stream = io.BytesIO(file_bytes)
+
+    if name.endswith((".csv", ".txt")):
+        df = pd.read_csv(file_stream, dtype=str)
+        return df, None
+
+    elif name.endswith((".xlsx", ".xls")):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            df = pd.read_excel(file_stream, engine="openpyxl", dtype=str)
+        return df, None
+
+    else:
+        raise ValueError("Unsupported file type. Please upload CSV or Excel (.xlsx/.xls).")
+
 def load_file_optimized(uploaded_file, max_size_mb=5) -> Tuple[pd.DataFrame, Optional[str]]:
-    """Versión optimizada para Render con límites de memoria"""
+
     file_bytes = uploaded_file.read()
     name = uploaded_file.name.lower()
     size = getattr(uploaded_file, "size", None)
     slog(f"load_file_optimized: name={name} size={size}")
     
-    # Verificar tamaño máximo
     if size and size > max_size_mb * 1024 * 1024:
         raise ValueError(f"File too large: {size} bytes. Maximum allowed: {max_size_mb}MB")
 
     try:
+        file_stream = io.BytesIO(file_bytes)
+        
         if name.endswith((".csv", ".txt")):
-            # Para CSV, usar dtype=str y low_memory=True
-            df = pd.read_csv(io.BytesIO(file_bytes), dtype=str, low_memory=True)
+
+            df = pd.read_csv(file_stream, dtype=str, low_memory=True)
             return df, None
 
         elif name.endswith((".xlsx", ".xls")):
-            # Para Excel, leer solo las primeras filas para análisis y luego cargar completo
+
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", UserWarning)
                 
-                # Primero leer solo metadata para entender la estructura
-                sample_df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl", nrows=5)
+                file_stream.seek(0) 
+                sample_df = pd.read_excel(file_stream, engine="openpyxl", nrows=5)
                 columns = sample_df.columns.tolist()
                 
-                # Volver a leer el archivo completo con dtype=str
-                file_bytes.seek(0)
+                file_stream.seek(0)
                 df = pd.read_excel(
-                    io.BytesIO(file_bytes), 
+                    file_stream, 
                     engine="openpyxl", 
                     dtype=str,
-                    usecols=columns  # Solo las columnas que existen
+                    usecols=columns
                 )
             return df, None
 
@@ -284,7 +304,7 @@ def load_file_optimized(uploaded_file, max_size_mb=5) -> Tuple[pd.DataFrame, Opt
         raise
 
 def load_previous_file_safe(prev_file, max_size_mb=5) -> Optional[pd.DataFrame]:
-    """Cargar archivo anterior de forma segura con límites"""
+
     if not prev_file:
         return None
         
@@ -306,10 +326,12 @@ def load_previous_file_safe(prev_file, max_size_mb=5) -> Optional[pd.DataFrame]:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore", UserWarning)
             
-            # Intentar cargar solo columnas necesarias
+            file_bytes = prev_file.read()
+            file_stream = io.BytesIO(file_bytes)
+            
             try:
                 pdf = pd.read_excel(
-                    prev_file,
+                    file_stream,
                     engine="openpyxl",
                     dtype=str,
                     usecols=_usecols
@@ -319,9 +341,9 @@ def load_previous_file_safe(prev_file, max_size_mb=5) -> Optional[pd.DataFrame]:
             except Exception as e:
                 slog(f"Failed to load with filtered columns, trying full: {e}")
                 # Fallback: cargar completo pero con dtype=str
-                prev_file.seek(0)
+                file_stream.seek(0)  # Reiniciar el stream
                 pdf_full = pd.read_excel(
-                    prev_file, 
+                    file_stream, 
                     engine="openpyxl", 
                     dtype=str
                 )
@@ -690,7 +712,6 @@ def _download_latest_google_earth_bytes() -> Tuple[Optional[bytes], Optional[str
     slog(f"Download GE latest from storage: {GE_BUCKET}/{GE_LATEST_KEY}")
     
     try:
-        # Usar sesión con retries
         session = create_session_with_retries()
         resp = session.get(url, headers=_headers_for_storage(), timeout=120)  # Timeout más largo para archivos grandes
         
@@ -844,8 +865,7 @@ def show_hubspot_file_creator():
     )
     st.title("🧹 Leads File Cleaner")
 
-    # Límites iguales para ambos archivos
-    MAX_FILE_SIZE_MB = 5  # 5MB máximo para ambos archivos
+    MAX_FILE_SIZE_MB = 5 
 
     if "ui_init_done" not in st.session_state:
         st.session_state.update({
@@ -866,7 +886,6 @@ def show_hubspot_file_creator():
         })
         slog("UI state initialized")
 
-    # Mostrar advertencias de límites
     with st.expander("⚠️ Important Limits for Render"):
         st.warning("""
         **Due to Render memory limits:**
@@ -926,7 +945,6 @@ def show_hubspot_file_creator():
         st.session_state.update({"final_ready": False, "final_csv_bytes": None, "final_xlsx_bytes": None})
         return
 
-    # Validar tamaño de archivos
     main_file_size = getattr(main_file, "size", 0)
     if main_file_size > MAX_FILE_SIZE_MB * 1024 * 1024:
         st.error(f"File too large: {main_file_size} bytes. Maximum allowed: {MAX_FILE_SIZE_MB}MB")
@@ -950,7 +968,6 @@ def show_hubspot_file_creator():
         slog(f"Load main file FAILED: {e}", "error")
         return
 
-    # Cargar archivo anterior de forma segura
     prev_df = None
     if prev_file:
         with step_log("Load previous file safely"):
@@ -962,9 +979,9 @@ def show_hubspot_file_creator():
                 st.warning("Could not load previous file (continuing without it)")
                 slog("Previous file loading failed")
 
-    # Start processing - con manejo mejorado de memoria
+    # Start processing
     if st.button("🚀 Process", key="process_btn", help="Run the cleaning pipeline", type="primary"):
-        # Limpiar memoria antes de empezar
+
         gc.collect()
         
         st.session_state.proc_df_work = main_df.copy()
