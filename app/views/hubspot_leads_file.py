@@ -5,15 +5,18 @@ import time
 import logging
 import traceback
 import warnings
+import gc
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Tuple
 
 import pandas as pd
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import streamlit as st
 from dotenv import load_dotenv
 
-
+# Configuración inicial
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
@@ -21,10 +24,24 @@ logging.basicConfig(
 )
 logger = logging.getLogger("leads_file_cleaner")
 
-def slog(msg: str, level: str = "info"):
-    """Server log (both logging + print so Render always shows it)."""
-    line = f"[leads-cleaner] {msg}"
-    print(line, flush=True)
+def get_memory_usage():
+    """Monitorear uso de memoria - versión simplificada sin psutil"""
+    try:
+        # Método alternativo para estimar uso de memoria
+        # En Render, podemos confiar en que el garbage collector maneje la memoria
+        return 0  # Retornar 0 ya que no tenemos psutil
+    except:
+        return 0
+
+def slog(msg: str, level: str = "info", extra=None):
+    """Server log mejorado"""
+    timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    
+    log_msg = f"[{timestamp}] [leads-cleaner] {msg}"
+    if extra:
+        log_msg += f" | EXTRA: {extra}"
+    
+    print(log_msg, flush=True)
     getattr(logger, level.lower(), logger.info)(msg)
 
 class step_log:
@@ -47,6 +64,40 @@ class step_log:
             slog(f"STEP END:   {self.name} in {dt:.3f}s")
         return False
 
+def create_session_with_retries():
+    """Crear sesión con retries y timeout configurado"""
+    session = requests.Session()
+    
+    # Estrategia de retry
+    retry_strategy = Retry(
+        total=3,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["HEAD", "GET", "PUT", "DELETE", "OPTIONS", "TRACE"],
+        backoff_factor=1
+    )
+    
+    adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=10, pool_maxsize=10)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+    
+    return session
+
+def safe_dataframe_operation(func, *args, **kwargs):
+    """Ejecutar operaciones con DataFrames de forma segura"""
+    slog(f"Starting dataframe operation: {func.__name__}")
+    
+    try:
+        result = func(*args, **kwargs)
+        
+        # Forzar garbage collection periódicamente
+        gc.collect()
+            
+        return result
+    except Exception as e:
+        slog(f"Operation failed: {e}", "error")
+        raise
+
+# El resto del código permanece igual...
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -200,26 +251,48 @@ def normalize_column_names(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 def load_file(uploaded_file) -> Tuple[pd.DataFrame, Optional[str]]:
-
     file_bytes = uploaded_file.read()
     name = uploaded_file.name.lower()
     size = getattr(uploaded_file, "size", None)
     slog(f"load_file: name={name} size={size}")
 
-    if name.endswith((".csv", ".txt")):
-        df = pd.read_csv(io.BytesIO(file_bytes))
-        return df, None
+    try:
+        if name.endswith((".csv", ".txt")):
+            # Leer CSV en chunks si es muy grande
+            if size and size > 10_000_000:  # 10MB
+                slog("Large CSV detected, using chunked reading")
+                chunks = []
+                chunk_size = 10000
+                for chunk in pd.read_csv(io.BytesIO(file_bytes), chunksize=chunk_size, dtype=str):
+                    chunks.append(chunk)
+                df = pd.concat(chunks, ignore_index=True)
+            else:
+                df = pd.read_csv(io.BytesIO(file_bytes), dtype=str)
+            return df, None
 
-    elif name.endswith((".xlsx", ".xls")):
-        # openpyxl es seguro para .xlsx; xlrd no soporta xlsx desde 2.0
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", UserWarning)
-            df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl", dtype=str)
-        return df, None
+        elif name.endswith((".xlsx", ".xls")):
+            # Para Excel, leer solo las columnas necesarias si es posible
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", UserWarning)
+                if size and size > 5_000_000:  # 5MB
+                    slog("Large Excel detected, reading with optimizations")
+                    # Leer solo las primeras filas para obtener columnas
+                    sample_df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl", nrows=5)
+                    columns = sample_df.columns.tolist()
+                    
+                    # Volver a leer el archivo completo
+                    file_bytes.seek(0)
+                    df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl", dtype=str, usecols=columns)
+                else:
+                    df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl", dtype=str)
+            return df, None
 
-    else:
-        raise ValueError("Unsupported file type. Please upload CSV or Excel (.xlsx/.xls).")
-
+        else:
+            raise ValueError("Unsupported file type. Please upload CSV or Excel (.xlsx/.xls).")
+            
+    except Exception as e:
+        slog(f"Error loading file {name}: {e}", "error")
+        raise
 
 def ensure_datetime_series(s: pd.Series) -> pd.Series:
     if pd.api.types.is_datetime64_any_dtype(s):
@@ -401,19 +474,32 @@ def _fetch_pending_updates_from_supabase() -> Tuple[List[Dict], Optional[str]]:
     try:
         if not SUPABASE_URL or not SUPABASE_KEY:
             return [], "Missing SUPABASE_URL/SUPABASE_KEY"
+        
         base_fields = ["id", SUPABASE_ID_FIELD, SUPABASE_EMAIL_FIELD] + list(SUPABASE_TO_FILE_COLS.keys())
         select_q = ",".join(base_fields)
         url = f"{SUPABASE_URL}/rest/v1/{UPDATES_TABLE}"
         params = {"select": select_q, "added_to_file_date": "is.null"}
+        
         slog(f"GET pending updates → {url} (select={select_q})")
-        resp = requests.get(url, headers=HEADERS, params=params, timeout=30)
+        
+        # Usar sesión con retries
+        session = create_session_with_retries()
+        resp = session.get(url, headers=HEADERS, params=params, timeout=45)  # Aumentar timeout
+        
         if not resp.ok:
-            return [], f"Supabase GET error {resp.status_code}: {resp.text}"
+            slog(f"Supabase GET error {resp.status_code}: {resp.text[:500]}", "error")
+            return [], f"Supabase GET error {resp.status_code}"
+        
         data = resp.json()
         slog(f"Pending updates fetched: {len(data)}")
         return data, None
+        
+    except requests.exceptions.Timeout:
+        slog("Supabase GET timeout after 45s", "error")
+        return [], "Supabase GET timeout"
     except Exception as e:
-        return [], f"Supabase GET exception: {e}"
+        slog(f"Supabase GET exception: {e}", "error")
+        return [], f"Supabase GET exception: {str(e)}"
 
 def apply_supabase_pending_updates(df: pd.DataFrame) -> Tuple[pd.DataFrame, Dict[str, int], List[str]]:
     out = df.copy()
@@ -536,7 +622,9 @@ def mark_lead_updates_as_added(update_ids: List[str]) -> Tuple[int, Optional[str
         slog(f"PATCH mark added → {len(chunk)} ids")
 
         try:
-            resp = requests.patch(url, headers=HEADERS, data=json.dumps(body), timeout=30)
+            # Usar sesión con retries
+            session = create_session_with_retries()
+            resp = session.patch(url, headers=HEADERS, data=json.dumps(body), timeout=30)
             if not resp.ok:
                 return updated_total, f"Supabase PATCH error {resp.status_code}: {resp.text}"
             try:
@@ -550,7 +638,6 @@ def mark_lead_updates_as_added(update_ids: List[str]) -> Tuple[int, Optional[str
     slog(f"mark_lead_updates_as_added: updated_total={updated_total}")
     return updated_total, None
 
-
 def _headers_for_storage() -> Dict[str, str]:
     return {
         "apikey": SUPABASE_KEY or "",
@@ -560,19 +647,31 @@ def _headers_for_storage() -> Dict[str, str]:
 def _download_latest_google_earth_bytes() -> Tuple[Optional[bytes], Optional[str]]:
     if not SUPABASE_URL or not SUPABASE_KEY:
         return None, "Missing SUPABASE_URL/SUPABASE_KEY"
+    
     url = f"{SUPABASE_URL}/storage/v1/object/{GE_BUCKET}/{GE_LATEST_KEY}"
     slog(f"Download GE latest from storage: {GE_BUCKET}/{GE_LATEST_KEY}")
+    
     try:
-        resp = requests.get(url, headers=_headers_for_storage(), timeout=60)
+        # Usar sesión con retries
+        session = create_session_with_retries()
+        resp = session.get(url, headers=_headers_for_storage(), timeout=120)  # Timeout más largo para archivos grandes
+        
         if resp.status_code == 404:
             slog("GE latest not found (404).")
             return None, None
         if not resp.ok:
-            return None, f"Storage GET error {resp.status_code}: {resp.text}"
+            slog(f"Storage GET error {resp.status_code}: {resp.text[:500]}", "error")
+            return None, f"Storage GET error {resp.status_code}"
+        
         slog(f"GE latest downloaded: {len(resp.content)} bytes")
         return resp.content, None
+        
+    except requests.exceptions.Timeout:
+        slog("Storage GET timeout after 120s", "error")
+        return None, "Storage GET timeout"
     except Exception as e:
-        return None, f"Storage GET exception: {e}"
+        slog(f"Storage GET exception: {e}", "error")
+        return None, f"Storage GET exception: {str(e)}"
 
 # Google Earth
 
@@ -700,8 +799,14 @@ def overlay_google_earth_latest(df: pd.DataFrame) -> pd.DataFrame:
 # UI 
 
 def show_hubspot_file_creator():
-    st.set_page_config(page_title="Leads File Cleaner", layout="wide")
+    st.set_page_config(
+        page_title="Leads File Cleaner", 
+        layout="wide",
+        page_icon="🧹"
+    )
     st.title("🧹 Leads File Cleaner")
+
+    MAX_FILE_SIZE = 50_000_000  # 50MB límite
 
     if "ui_init_done" not in st.session_state:
         st.session_state.update({
@@ -761,9 +866,21 @@ def show_hubspot_file_creator():
         st.session_state.update({"final_ready": False, "final_csv_bytes": None, "final_xlsx_bytes": None})
         return
 
+    # Validar tamaño de archivos
+    main_file_size = getattr(main_file, "size", 0)
+    if main_file_size > MAX_FILE_SIZE:
+        st.error(f"File too large: {main_file_size} bytes. Maximum allowed: {MAX_FILE_SIZE} bytes")
+        return
+
+    if prev_file:
+        prev_file_size = getattr(prev_file, "size", 0)
+        if prev_file_size > MAX_FILE_SIZE:
+            st.warning("Previous file is too large, skipping...")
+            prev_file = None
+
     try:
         with step_log("Load main file"):
-            main_df, _ = load_file(main_file)
+            main_df, _ = safe_dataframe_operation(load_file, main_file)
             main_df = normalize_column_names(main_df)
             slog(f"Main columns: {list(main_df.columns)[:12]} ... total={len(main_df.columns)}")
             slog(f"Main df loaded: shape={main_df.shape}")
@@ -815,7 +932,6 @@ def show_hubspot_file_creator():
             slog(f"Load previous file FAILED hard: {e}", "error")
             prev_df = None
 
-
     # Start processing
     if st.button("🚀 Process", key="process_btn", help="Run the cleaning pipeline"):
         st.session_state.proc_df_work = main_df.copy()
@@ -836,37 +952,37 @@ def show_hubspot_file_creator():
         try:
             if step == 1:
                 with step_log("Step 1: Clean date-like columns"):
-                    df_work, _ = clean_majority_date_like_columns(df_work)
+                    df_work, _ = safe_dataframe_operation(clean_majority_date_like_columns, df_work)
                     slog(f"Step1 df shape: {df_work.shape}")
             elif step == 2:
                 with step_log("Step 2: Format datetime columns"):
-                    df_work, _ = format_datetime_columns(df_work, DATETIME_COLS, "%m/%d/%Y %I:%M %p")
+                    df_work, _ = safe_dataframe_operation(format_datetime_columns, df_work, DATETIME_COLS, "%m/%d/%Y %I:%M %p")
                     slog(f"Step2 df shape: {df_work.shape}")
             elif step == 3:
                 with step_log("Step 3: Format date-only columns"):
-                    df_work, _ = format_datetime_columns(df_work, DATE_ONLY_COLS, "%m/%d/%Y")
+                    df_work, _ = safe_dataframe_operation(format_datetime_columns, df_work, DATE_ONLY_COLS, "%m/%d/%Y")
                     slog(f"Step3 df shape: {df_work.shape}")
             elif step == 4:
                 with step_log("Step 4: Phones + Zip"):
-                    _, _ = format_phone_columns(df_work, PHONE_COLS)
-                    df_work = format_zipcode_column(df_work)
+                    _, _ = safe_dataframe_operation(format_phone_columns, df_work, PHONE_COLS)
+                    df_work = safe_dataframe_operation(format_zipcode_column, df_work)
                     slog(f"Step4 df shape: {df_work.shape}")
             elif step == 5:
                 with step_log("Step 5: Insert cols + defaults + enrich"):
                     cols_with_defaults = {**{c: "" for c in BEFORE_ZIPCODE}, **DEFAULTS_AFTER_LEADSTATUS}
-                    df_work = insert_columns(df_work, before="ZipCode", after="LeadStatus", cols_with_defaults=cols_with_defaults)
-                    df_work, _ = enrich_from_previous_for_columns(df_work, prev_df_local, BEFORE_ZIPCODE)
-                    df_work, _ = apply_after_leadstatus_rules(df_work, prev_df_local, DEFAULTS_AFTER_LEADSTATUS, AFTER_LEADSTATUS)
+                    df_work = safe_dataframe_operation(insert_columns, df_work, before="ZipCode", after="LeadStatus", cols_with_defaults=cols_with_defaults)
+                    df_work, _ = safe_dataframe_operation(enrich_from_previous_for_columns, df_work, prev_df_local, BEFORE_ZIPCODE)
+                    df_work, _ = safe_dataframe_operation(apply_after_leadstatus_rules, df_work, prev_df_local, DEFAULTS_AFTER_LEADSTATUS, AFTER_LEADSTATUS)
                     slog(f"Step5 df shape: {df_work.shape}")
             elif step == 6:
                 with step_log("Step 6: Apply Supabase pending updates"):
-                    df_work, sb_stats, processed_ids = apply_supabase_pending_updates(df_work)
+                    df_work, sb_stats, processed_ids = safe_dataframe_operation(apply_supabase_pending_updates, df_work)
                     st.session_state.proc_sb_stats = sb_stats
                     st.session_state.proc_ids = processed_ids
                     slog(f"Step6 df shape: {df_work.shape} ; stats={sb_stats} ; ids={len(processed_ids)}")
             elif step == 7:
                 with step_log("Step 7: Overlay Google Earth + finalize"):
-                    df_work = overlay_google_earth_latest(df_work)
+                    df_work = safe_dataframe_operation(overlay_google_earth_latest, df_work)
                     df_work = df_work.fillna("")
                     st.session_state["processed_df_df"] = df_work
                     st.session_state["updates_marked"] = False
@@ -923,7 +1039,7 @@ def show_hubspot_file_creator():
                 try:
                     df_final = st.session_state["processed_df_df"]
                     with step_log("Build final CSV/XLSX"):
-                        csv_bytes = df_final.to_csv(index=False).encode("utf-8")
+                        csv_bytes = safe_dataframe_operation(lambda: df_final.to_csv(index=False).encode("utf-8"))
                         xlsx_bytes = io.BytesIO()
                         with pd.ExcelWriter(xlsx_bytes, engine="openpyxl") as writer:
                             df_final.to_excel(writer, index=False, sheet_name="Processed")
@@ -959,3 +1075,6 @@ def show_hubspot_file_creator():
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 key="dl_xlsx_final_btn",
             )
+
+if __name__ == "__main__":
+    show_hubspot_file_creator()
