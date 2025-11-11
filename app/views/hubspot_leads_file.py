@@ -24,15 +24,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger("leads_file_cleaner")
 
-def get_memory_usage():
-    """Monitorear uso de memoria - versión simplificada sin psutil"""
-    try:
-        # Método alternativo para estimar uso de memoria
-        # En Render, podemos confiar en que el garbage collector maneje la memoria
-        return 0  # Retornar 0 ya que no tenemos psutil
-    except:
-        return 0
-
 def slog(msg: str, level: str = "info", extra=None):
     """Server log mejorado"""
     timestamp = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
@@ -97,7 +88,6 @@ def safe_dataframe_operation(func, *args, **kwargs):
         slog(f"Operation failed: {e}", "error")
         raise
 
-# El resto del código permanece igual...
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
@@ -250,41 +240,40 @@ def normalize_column_names(df: pd.DataFrame) -> pd.DataFrame:
         out = out.rename(columns=rename_map)
     return out
 
-def load_file(uploaded_file) -> Tuple[pd.DataFrame, Optional[str]]:
+def load_file_optimized(uploaded_file, max_size_mb=5) -> Tuple[pd.DataFrame, Optional[str]]:
+    """Versión optimizada para Render con límites de memoria"""
     file_bytes = uploaded_file.read()
     name = uploaded_file.name.lower()
     size = getattr(uploaded_file, "size", None)
-    slog(f"load_file: name={name} size={size}")
+    slog(f"load_file_optimized: name={name} size={size}")
+    
+    # Verificar tamaño máximo
+    if size and size > max_size_mb * 1024 * 1024:
+        raise ValueError(f"File too large: {size} bytes. Maximum allowed: {max_size_mb}MB")
 
     try:
         if name.endswith((".csv", ".txt")):
-            # Leer CSV en chunks si es muy grande
-            if size and size > 10_000_000:  # 10MB
-                slog("Large CSV detected, using chunked reading")
-                chunks = []
-                chunk_size = 10000
-                for chunk in pd.read_csv(io.BytesIO(file_bytes), chunksize=chunk_size, dtype=str):
-                    chunks.append(chunk)
-                df = pd.concat(chunks, ignore_index=True)
-            else:
-                df = pd.read_csv(io.BytesIO(file_bytes), dtype=str)
+            # Para CSV, usar dtype=str y low_memory=True
+            df = pd.read_csv(io.BytesIO(file_bytes), dtype=str, low_memory=True)
             return df, None
 
         elif name.endswith((".xlsx", ".xls")):
-            # Para Excel, leer solo las columnas necesarias si es posible
+            # Para Excel, leer solo las primeras filas para análisis y luego cargar completo
             with warnings.catch_warnings():
                 warnings.simplefilter("ignore", UserWarning)
-                if size and size > 5_000_000:  # 5MB
-                    slog("Large Excel detected, reading with optimizations")
-                    # Leer solo las primeras filas para obtener columnas
-                    sample_df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl", nrows=5)
-                    columns = sample_df.columns.tolist()
-                    
-                    # Volver a leer el archivo completo
-                    file_bytes.seek(0)
-                    df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl", dtype=str, usecols=columns)
-                else:
-                    df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl", dtype=str)
+                
+                # Primero leer solo metadata para entender la estructura
+                sample_df = pd.read_excel(io.BytesIO(file_bytes), engine="openpyxl", nrows=5)
+                columns = sample_df.columns.tolist()
+                
+                # Volver a leer el archivo completo con dtype=str
+                file_bytes.seek(0)
+                df = pd.read_excel(
+                    io.BytesIO(file_bytes), 
+                    engine="openpyxl", 
+                    dtype=str,
+                    usecols=columns  # Solo las columnas que existen
+                )
             return df, None
 
         else:
@@ -293,6 +282,55 @@ def load_file(uploaded_file) -> Tuple[pd.DataFrame, Optional[str]]:
     except Exception as e:
         slog(f"Error loading file {name}: {e}", "error")
         raise
+
+def load_previous_file_safe(prev_file, max_size_mb=5) -> Optional[pd.DataFrame]:
+    """Cargar archivo anterior de forma segura con límites"""
+    if not prev_file:
+        return None
+        
+    prev_size = getattr(prev_file, "size", 0) or 0
+    slog(f"load_previous_file_safe: name={prev_file.name} size={prev_size} bytes")
+    
+    # Verificar tamaño máximo
+    if prev_size > max_size_mb * 1024 * 1024:
+        slog(f"Previous file too large: {prev_size} > {max_size_mb}MB - Skipping", "warning")
+        return None
+    
+    try:
+        wanted_cols = set(["Id", "Email"] + BEFORE_ZIPCODE + AFTER_LEADSTATUS)
+        
+        def _usecols(colname: str) -> bool:
+            c = str(colname).strip()
+            return (c in wanted_cols) or (c.lower() in {w.lower() for w in wanted_cols})
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", UserWarning)
+            
+            # Intentar cargar solo columnas necesarias
+            try:
+                pdf = pd.read_excel(
+                    prev_file,
+                    engine="openpyxl",
+                    dtype=str,
+                    usecols=_usecols
+                )
+                slog(f"Previous file loaded with filtered columns: {pdf.shape}")
+                return normalize_column_names(pdf)
+            except Exception as e:
+                slog(f"Failed to load with filtered columns, trying full: {e}")
+                # Fallback: cargar completo pero con dtype=str
+                prev_file.seek(0)
+                pdf_full = pd.read_excel(
+                    prev_file, 
+                    engine="openpyxl", 
+                    dtype=str
+                )
+                slog(f"Previous file loaded full: {pdf_full.shape}")
+                return normalize_column_names(pdf_full)
+                
+    except Exception as e:
+        slog(f"Failed to load previous file safely: {e}", "error")
+        return None
 
 def ensure_datetime_series(s: pd.Series) -> pd.Series:
     if pd.api.types.is_datetime64_any_dtype(s):
@@ -806,7 +844,8 @@ def show_hubspot_file_creator():
     )
     st.title("🧹 Leads File Cleaner")
 
-    MAX_FILE_SIZE = 50_000_000  # 50MB límite
+    # Límites iguales para ambos archivos
+    MAX_FILE_SIZE_MB = 5  # 5MB máximo para ambos archivos
 
     if "ui_init_done" not in st.session_state:
         st.session_state.update({
@@ -827,11 +866,32 @@ def show_hubspot_file_creator():
         })
         slog("UI state initialized")
 
+    # Mostrar advertencias de límites
+    with st.expander("⚠️ Important Limits for Render"):
+        st.warning("""
+        **Due to Render memory limits:**
+        - Main file: max 5MB
+        - Previous file: max 5MB  
+        - Large files may cause the app to restart
+        - For best results, use filtered/smaller files
+        """)
+
     col1, col2 = st.columns(2)
     with col1:
         main_file = st.file_uploader("New leads file", type=["csv", "txt", "xlsx", "xls"], key="main")
+        if main_file:
+            main_size_mb = getattr(main_file, "size", 0) / (1024 * 1024)
+            st.write(f"Size: {main_size_mb:.2f} MB")
+            if main_size_mb > MAX_FILE_SIZE_MB:
+                st.error(f"❌ File too large! Max {MAX_FILE_SIZE_MB}MB")
+                
     with col2:
         prev_file = st.file_uploader("Previous version (optional)", type=["csv", "txt", "xlsx", "xls"], key="prev")
+        if prev_file:
+            prev_size_mb = getattr(prev_file, "size", 0) / (1024 * 1024)
+            st.write(f"Size: {prev_size_mb:.2f} MB")
+            if prev_size_mb > MAX_FILE_SIZE_MB:
+                st.error(f"❌ File too large! Max {MAX_FILE_SIZE_MB}MB")
 
     def _file_sig(uploaded):
         if not uploaded: return None
@@ -868,72 +928,45 @@ def show_hubspot_file_creator():
 
     # Validar tamaño de archivos
     main_file_size = getattr(main_file, "size", 0)
-    if main_file_size > MAX_FILE_SIZE:
-        st.error(f"File too large: {main_file_size} bytes. Maximum allowed: {MAX_FILE_SIZE} bytes")
+    if main_file_size > MAX_FILE_SIZE_MB * 1024 * 1024:
+        st.error(f"File too large: {main_file_size} bytes. Maximum allowed: {MAX_FILE_SIZE_MB}MB")
         return
 
     if prev_file:
         prev_file_size = getattr(prev_file, "size", 0)
-        if prev_file_size > MAX_FILE_SIZE:
-            st.warning("Previous file is too large, skipping...")
+        if prev_file_size > MAX_FILE_SIZE_MB * 1024 * 1024:
+            st.error(f"Previous file too large: {prev_file_size} bytes. Maximum allowed: {MAX_FILE_SIZE_MB}MB")
             prev_file = None
 
     try:
         with step_log("Load main file"):
-            main_df, _ = safe_dataframe_operation(load_file, main_file)
+            main_df, _ = safe_dataframe_operation(load_file_optimized, main_file, MAX_FILE_SIZE_MB)
             main_df = normalize_column_names(main_df)
             slog(f"Main columns: {list(main_df.columns)[:12]} ... total={len(main_df.columns)}")
             slog(f"Main df loaded: shape={main_df.shape}")
+            st.success(f"✅ Main file loaded: {main_df.shape[0]} rows, {main_df.shape[1]} columns")
     except Exception as e:
         st.error(f"Failed to load main file: {e}")
         slog(f"Load main file FAILED: {e}", "error")
         return
 
+    # Cargar archivo anterior de forma segura
     prev_df = None
     if prev_file:
-        try:
-            prev_size = getattr(prev_file, "size", 0) or 0
-            slog(f"Prev file announced: name={prev_file.name} size={prev_size} bytes")
-
-            MAX_SAFE_BYTES = 6_000_000 
-            if prev_size > MAX_SAFE_BYTES:
-                st.warning("Previous file is large; skipping previous-file enrichment to protect memory on Render.")
-                slog(f"Prev file skipped due to size > {MAX_SAFE_BYTES} (actual={prev_size})")
+        with step_log("Load previous file safely"):
+            prev_df = load_previous_file_safe(prev_file, MAX_FILE_SIZE_MB)
+            if prev_df is not None:
+                slog(f"Previous df loaded safely: shape={prev_df.shape}")
+                st.success(f"✅ Previous file loaded: {prev_df.shape[0]} rows")
             else:
-                wanted_cols = set(["Id", "Email"] + BEFORE_ZIPCODE + AFTER_LEADSTATUS)
+                st.warning("Could not load previous file (continuing without it)")
+                slog("Previous file loading failed")
 
-                def _usecols(colname: str) -> bool:
-                    c = str(colname).strip()
-                    return (c in wanted_cols) or (c.lower() in {w.lower() for w in wanted_cols})
-
-                with step_log("Load previous file (filtered columns)"):
-                    with warnings.catch_warnings():
-                        warnings.simplefilter("ignore", UserWarning)
-                        pdf = pd.read_excel(
-                            prev_file,
-                            engine="openpyxl",
-                            dtype=str,
-                            usecols=_usecols
-                        )
-                    prev_df = normalize_column_names(pdf)
-                    slog(f"Prev df (filtered) loaded: shape={prev_df.shape}")
-
-                if prev_df is None or prev_df.empty or "Id" not in prev_df.columns:
-                    with step_log("Load previous file (full fallback)"):
-                        prev_file.seek(0)
-                        with warnings.catch_warnings():
-                            warnings.simplefilter("ignore", UserWarning)
-                            pdf_full = pd.read_excel(prev_file, engine="openpyxl", dtype=str)
-                        prev_df = normalize_column_names(pdf_full)
-                        slog(f"Prev df (full) loaded: shape={prev_df.shape}")
-
-        except Exception as e:
-            st.warning(f"Failed to load previous file (continuing without it): {e}")
-            slog(f"Load previous file FAILED hard: {e}", "error")
-            prev_df = None
-
-    # Start processing
-    if st.button("🚀 Process", key="process_btn", help="Run the cleaning pipeline"):
+    # Start processing - con manejo mejorado de memoria
+    if st.button("🚀 Process", key="process_btn", help="Run the cleaning pipeline", type="primary"):
+        # Limpiar memoria antes de empezar
+        gc.collect()
+        
         st.session_state.proc_df_work = main_df.copy()
         st.session_state.proc_prev_df = prev_df
         st.session_state.proc_step = 1
@@ -971,8 +1004,12 @@ def show_hubspot_file_creator():
                 with step_log("Step 5: Insert cols + defaults + enrich"):
                     cols_with_defaults = {**{c: "" for c in BEFORE_ZIPCODE}, **DEFAULTS_AFTER_LEADSTATUS}
                     df_work = safe_dataframe_operation(insert_columns, df_work, before="ZipCode", after="LeadStatus", cols_with_defaults=cols_with_defaults)
-                    df_work, _ = safe_dataframe_operation(enrich_from_previous_for_columns, df_work, prev_df_local, BEFORE_ZIPCODE)
-                    df_work, _ = safe_dataframe_operation(apply_after_leadstatus_rules, df_work, prev_df_local, DEFAULTS_AFTER_LEADSTATUS, AFTER_LEADSTATUS)
+                    # Solo enriquecer si tenemos datos previos
+                    if prev_df_local is not None:
+                        df_work, _ = safe_dataframe_operation(enrich_from_previous_for_columns, df_work, prev_df_local, BEFORE_ZIPCODE)
+                        df_work, _ = safe_dataframe_operation(apply_after_leadstatus_rules, df_work, prev_df_local, DEFAULTS_AFTER_LEADSTATUS, AFTER_LEADSTATUS)
+                    else:
+                        slog("Skipping previous file enrichment - no data available")
                     slog(f"Step5 df shape: {df_work.shape}")
             elif step == 6:
                 with step_log("Step 6: Apply Supabase pending updates"):
