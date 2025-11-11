@@ -890,7 +890,7 @@ def show_hubspot_file_creator():
         st.warning("""
         **Due to Render memory limits:**
         - Main file: max 5MB
-        - Previous file: max 5MB  
+        - Previous file: max 5MB (CSV format)  
         - Large files may cause the app to restart
         - For best results, use filtered/smaller files
         """)
@@ -905,7 +905,7 @@ def show_hubspot_file_creator():
                 st.error(f"❌ File too large! Max {MAX_FILE_SIZE_MB}MB")
                 
     with col2:
-        prev_file = st.file_uploader("Previous version (optional)", type=["csv", "txt", "xlsx", "xls"], key="prev")
+        prev_file = st.file_uploader("Previous version CSV Format (optional)", type=["csv", "txt", "xlsx", "xls"], key="prev")
         if prev_file:
             prev_size_mb = getattr(prev_file, "size", 0) / (1024 * 1024)
             st.write(f"Size: {prev_size_mb:.2f} MB")
