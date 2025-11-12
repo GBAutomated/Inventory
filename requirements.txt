@@ -13,3 +13,4 @@ matplotlib>=3.9,<3.11
 xlrd>=2.0.1          
 supabase>=2.5.1
 storage3>=0.7.4
+psutil>=7.1.3

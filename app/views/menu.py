@@ -19,7 +19,6 @@ def _safe_stretch_button(label: str, key: str):
 
 
 def _handle_logout(backend_url: str | None):
-    """Logs out locally and performs a safe one-shot redirect."""
 
     for k in list(st.session_state.keys()):
         del st.session_state[k]
@@ -69,7 +68,6 @@ def show_sidebar_menu():
         st.session_state.active_submenu = None
 
     with st.sidebar:
-        # Optional logo
         if LOGO.strip():
             try:
                 st.image(LOGO)
@@ -111,9 +109,5 @@ def show_sidebar_menu():
             st.markdown("**HubSpot Options:**")
             if _safe_stretch_button("📑 Create New Leads File", key="btn_lds_file"):
                 st.session_state.active_submenu = "Create New Leads File"
-
-        # ==== Logout ====
-        if _safe_stretch_button("🚪 Log out", key="logout_btn"):
-            _handle_logout(BACKEND_URL)
 
     return st.session_state.get("active_menu"), st.session_state.get("active_submenu")

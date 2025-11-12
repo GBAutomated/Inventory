@@ -1,6 +1,7 @@
 import os
 import streamlit as st
 from dotenv import load_dotenv
+import requests
 
 st.set_page_config(page_title="Inventory Dashboard", layout="wide")
 
@@ -42,15 +43,42 @@ from app.views.google_earth_file import (
 if "user_id" not in st.session_state:
     st.session_state["user_id"] = None
 
+def logout_user():
+
+    try:
+
+        user_email = st.session_state.get("user", "")
+        logout_url = f"{BACKEND_URL}/logout"
+        if user_email:
+            logout_url += f"?email={user_email}"
+            
+        response = requests.get(logout_url, timeout=5)
+        
+        st.session_state.clear()
+        
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
+            
+        st.success("You have been logged out successfully")
+        st.rerun()
+        
+    except Exception as e:
+        st.session_state.clear()
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
+        st.rerun()
 
 def require_login():
     query_params = st.query_params
 
-    # Handle logout via query param
     if "logout" in query_params:
         st.session_state.clear()
         try:
-            st.query_params.update({})
+            st.query_params.clear()
         except Exception:
             pass
         st.rerun()
@@ -70,18 +98,17 @@ def require_login():
 
             st.success(f"Welcome 👋 {st.session_state['name']}")
             try:
-                st.query_params.update({})
+                st.query_params.clear()
             except Exception:
                 pass
         else:
-            # Login screen
             if LOGO:
                 try:
                     st.image(LOGO)
                 except Exception:
                     pass
             st.title("🔐 Welcome to SFR GB System")
-            if st.button("Sign in with your Google Account", key="login_btn"):
+            if st.button("Sign in with your Google Account", key="login_btn", type="primary"):
                 login_url = f"{BACKEND_URL}/login" if BACKEND_URL else "/login"
                 st.markdown(
                     f"<meta http-equiv='refresh' content='0;url={login_url}'>",
@@ -90,14 +117,18 @@ def require_login():
                 st.stop()
             st.stop()
 
+def show_logout_button():
+    if "user" in st.session_state:
+        if st.sidebar.button("🚪 Logout", key="main_logout_btn", use_container_width=True):
+            logout_user()
 
-# Start 
 require_login()
 
-# Sidebar
 active_menu, active_submenu = show_sidebar_menu()
 
-# Routing
+show_logout_button()
+
+
 if active_menu == "Inventory" and active_submenu == "System Inventory":
     show_upload_system()
 
